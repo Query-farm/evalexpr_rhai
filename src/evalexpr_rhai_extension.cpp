@@ -7,7 +7,7 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
-
+#include "query_farm_telemetry.hpp"
 // Include the declarations of things from Rust.
 #include "rust.h"
 
@@ -179,6 +179,8 @@ namespace duckdb
         evalexpr_rhai.AddFunction(evalexpr_no_context);
 
         loader.RegisterFunction(evalexpr_rhai);
+
+        QueryFarmSendTelemetry(loader, "evalexpr_rhai", "2025092301");
     }
 
     void EvalexprRhaiExtension::Load(ExtensionLoader &loader)
@@ -193,7 +195,7 @@ namespace duckdb
 
     std::string EvalexprRhaiExtension::Version() const
     {
-        return "1.0.1";
+        return "2025092301";
     }
 
 } // namespace duckdb

@@ -98,7 +98,9 @@ project(${TARGET_NAME})
 
 include_directories(src/include)
 
-set(EXTENSION_SOURCES src/evalexpr_rhai_extension.cpp)
+set(EXTENSION_SOURCES
+src/evalexpr_rhai_extension.cpp
+src/query_farm_telemetry.cpp)
 
 build_static_extension(${TARGET_NAME} ${EXTENSION_SOURCES})
 build_loadable_extension(${TARGET_NAME} " " ${EXTENSION_SOURCES})
