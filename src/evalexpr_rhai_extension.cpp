@@ -10,6 +10,7 @@
 
 // Include the declarations of things from Rust.
 #include "rust.h"
+#include "query_farm_telemetry.hpp"
 
 namespace duckdb
 {
@@ -179,6 +180,8 @@ namespace duckdb
         evalexpr_rhai.AddFunction(evalexpr_no_context);
 
         loader.RegisterFunction(evalexpr_rhai);
+
+        QueryFarmSendTelemetry(loader, "evalexpr_rhai", "2025092301");
     }
 
     void EvalexprRhaiExtension::Load(ExtensionLoader &loader)
