@@ -7,9 +7,10 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
-#include "query_farm_telemetry.hpp"
+
 // Include the declarations of things from Rust.
 #include "rust.h"
+#include "query_farm_telemetry.hpp"
 
 namespace duckdb
 {
@@ -38,13 +39,16 @@ namespace duckdb
                 union_tag_data[i] = 1;
                 FlatVector::Validity(*entries[1]).SetInvalid(i);
                 union_ok_data[i] = "";
-                union_error_data[i] = eval_result.err._0;
+                union_error_data[i] = StringVector::AddStringOrBlob(*entries[2], eval_result.err._0);
+                free(eval_result.err._0);
             }
             else
             {
                 union_tag_data[i] = 0;
                 FlatVector::Validity(*entries[2]).SetInvalid(i);
-                union_ok_data[i] = eval_result.ok._0;
+                //                union_ok_data[i] = eval_result.ok._0;
+                union_ok_data[i] = StringVector::AddStringOrBlob(*entries[1], eval_result.ok._0);
+                free(eval_result.ok._0);
                 union_error_data[i] = "";
             }
         };
@@ -156,14 +160,9 @@ namespace duckdb
         }
     }
 
-    extern "C" void *duckdb_malloc(size_t size);
-    extern "C" void duckdb_free(void *ptr);
-
     // Extension initalization.
     static void LoadInternal(ExtensionLoader &loader)
     {
-        init_memory_allocation(duckdb_malloc, duckdb_free);
-
         ScalarFunctionSet evalexpr_rhai("evalexpr_rhai");
 
         child_list_t<LogicalType> members = {{"ok", LogicalType::JSON()}, {"error", LogicalType::VARCHAR}};
@@ -195,7 +194,7 @@ namespace duckdb
 
     std::string EvalexprRhaiExtension::Version() const
     {
-        return "2025092301";
+        return "1.0.1";
     }
 
 } // namespace duckdb
