@@ -1,13 +1,11 @@
 // duckdb_evalexpr_rust
-// Copyright 2024 Rusty Conover <rusty@conover.me>
+// Copyright 2024-2025 Rusty Conover <rusty@query.farm>
 // Licensed under the MIT License
 
-use std::alloc::Layout;
-use std::ffi::{c_char, c_void, CString};
+use std::ffi::{c_char, CString};
 use std::ptr;
 use std::slice;
 use std::str;
-use std::sync::Once;
 
 use rhai::{packages::Package, Dynamic, Engine, Scope, AST};
 //use rhai_chrono::ChronoPackage;
@@ -83,7 +81,7 @@ pub extern "C" fn compile_ast(
         }
         Err(error) => {
             let formatted_error = format!("{}", error);
-            let error_str = create_cstring_with_custom_allocator(&formatted_error);
+            let error_str = CString::new(formatted_error).unwrap();
             let result = Box::new(ResultCompiledAst::Err(error_str.into_raw()));
             Box::into_raw(result)
         }
@@ -140,12 +138,12 @@ pub extern "C" fn eval_ast(
             Ok(output) => {
                 let json = serde_json::to_string(&output)
                     .expect("Failed to serialize Rhai result to JSON");
-                let value_str = create_cstring_with_custom_allocator(&json);
+                let value_str = CString::new(json).unwrap();
                 ResultCString::Ok(value_str.into_raw())
             }
             Err(error) => {
                 let formatted_error = format!("{}", error);
-                let error_str = create_cstring_with_custom_allocator(&formatted_error);
+                let error_str = CString::new(formatted_error).unwrap();
                 ResultCString::Err(error_str.into_raw())
             }
         }
@@ -200,12 +198,12 @@ pub extern "C" fn perform_eval(
     match result {
         Ok(output) => {
             let json = serde_json::to_string(&output).expect("Failed to serialize result to JSON");
-            let value_str = create_cstring_with_custom_allocator(&json);
+            let value_str = CString::new(json).unwrap();
             ResultCString::Ok(value_str.into_raw())
         }
         Err(error) => {
             let formatted_error = format!("{}", error);
-            let error_str = create_cstring_with_custom_allocator(&formatted_error);
+            let error_str = CString::new(formatted_error).unwrap();
             ResultCString::Err(error_str.into_raw())
         }
     }
@@ -214,50 +212,4 @@ pub extern "C" fn perform_eval(
 #[cfg(test)]
 mod tests {}
 
-fn create_cstring_with_custom_allocator(s: &str) -> CString {
-    // Convert the input string to a CString
-    let c_string = CString::new(s).expect("CString::new failed");
 
-    // Duplicate the CString using the global allocator
-    let len = c_string.as_bytes_with_nul().len();
-    let layout = Layout::from_size_align(len, 1).unwrap();
-
-    unsafe {
-        let ptr = ALLOCATOR.malloc.unwrap()(layout.size()) as *mut c_char;
-        if ptr.is_null() {
-            panic!("Failed to allocate memory from duckdb");
-        }
-        ptr::copy_nonoverlapping(c_string.as_ptr(), ptr, len);
-        CString::from_raw(ptr)
-    }
-}
-
-type DuckDBMallocFunctionType = unsafe extern "C" fn(usize) -> *mut ::std::os::raw::c_void;
-type DuckDBFreeFunctionType = unsafe extern "C" fn(*mut c_void);
-
-struct Allocator {
-    malloc: Option<DuckDBMallocFunctionType>,
-    free: Option<DuckDBFreeFunctionType>,
-}
-
-// Create a global instance of the Allocator struct.
-static mut ALLOCATOR: Allocator = Allocator {
-    malloc: None,
-    free: None,
-};
-
-// A Once instance to ensure that the allocator is only initialized once.
-static INIT: Once = Once::new();
-
-#[no_mangle]
-pub extern "C" fn init_memory_allocation(
-    malloc_fn: DuckDBMallocFunctionType,
-    free_fn: DuckDBFreeFunctionType,
-) {
-    unsafe {
-        INIT.call_once(|| {
-            ALLOCATOR.malloc = Some(malloc_fn);
-            ALLOCATOR.free = Some(free_fn);
-        });
-    }
-}

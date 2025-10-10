@@ -121,3 +121,20 @@ select collatz_series_length(source_indexes.r).ok::bigint as count, source_index
 147	879
 147	889
 
+query I
+select count(*) from (select evalexpr_rhai('"hello"').ok) as data;
+----
+1
+
+statement ok
+CREATE table ids as (select * as n from range(10000))
+
+query I
+select count(*) from (select evalexpr_rhai('"hello_' || ids.n || '"').ok from ids) as data;
+----
+10000
+
+query I
+select sum(length(v)) from (select evalexpr_rhai('"hello_' || ids.n || '"').ok as v from ids) as data;
+----
+118890
