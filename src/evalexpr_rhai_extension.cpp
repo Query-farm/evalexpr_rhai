@@ -163,23 +163,43 @@ namespace duckdb
     // Extension initalization.
     static void LoadInternal(ExtensionLoader &loader)
     {
-        ScalarFunctionSet evalexpr_rhai("evalexpr_rhai");
+        ScalarFunctionSet evalexpr_rhai_set("evalexpr_rhai");
 
         child_list_t<LogicalType> members = {{"ok", LogicalType::JSON()}, {"error", LogicalType::VARCHAR}};
 
         auto evalexpr_with_context = ScalarFunction({LogicalType::VARCHAR, LogicalType::JSON()}, LogicalType::UNION(members), evalexprFunc);
         evalexpr_with_context.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
         evalexpr_with_context.stability = FunctionStability::VOLATILE;
-        evalexpr_rhai.AddFunction(evalexpr_with_context);
+        evalexpr_rhai_set.AddFunction(evalexpr_with_context);
 
         auto evalexpr_no_context = ScalarFunction({LogicalType::VARCHAR}, LogicalType::UNION(members), evalexprFunc);
         evalexpr_no_context.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
         evalexpr_no_context.stability = FunctionStability::VOLATILE;
-        evalexpr_rhai.AddFunction(evalexpr_no_context);
+        evalexpr_rhai_set.AddFunction(evalexpr_no_context);
 
-        loader.RegisterFunction(evalexpr_rhai);
+        CreateScalarFunctionInfo info(evalexpr_rhai_set);
 
-        QueryFarmSendTelemetry(loader, "evalexpr_rhai", "2025092301");
+        // Documentation for the single-argument variant
+        FunctionDescription desc_no_context;
+        desc_no_context.parameter_names = {"expression"};
+        desc_no_context.parameter_types = {LogicalType::VARCHAR};
+        desc_no_context.description = "Evaluate a Rhai scripting language expression and return the result as JSON";
+        desc_no_context.examples = {"evalexpr_rhai('40 + 2')", "evalexpr_rhai('[1, 2, 3].map(|x| x * 2)')"};
+        desc_no_context.categories = {"scripting", "json"};
+        info.descriptions.push_back(std::move(desc_no_context));
+
+        // Documentation for the two-argument variant with context
+        FunctionDescription desc_with_context;
+        desc_with_context.parameter_names = {"expression", "context"};
+        desc_with_context.parameter_types = {LogicalType::VARCHAR, LogicalType::JSON()};
+        desc_with_context.description = "Evaluate a Rhai scripting language expression with a JSON context object accessible as 'context'";
+        desc_with_context.examples = {"evalexpr_rhai('context.x + context.y', '{\"x\": 10, \"y\": 20}')", "evalexpr_rhai('context.items.len()', '{\"items\": [1, 2, 3]}')"};
+        desc_with_context.categories = {"scripting", "json"};
+        info.descriptions.push_back(std::move(desc_with_context));
+
+        loader.RegisterFunction(std::move(info));
+
+        QueryFarmSendTelemetry(loader, "evalexpr_rhai", "2025120401");
     }
 
     void EvalexprRhaiExtension::Load(ExtensionLoader &loader)
@@ -194,7 +214,7 @@ namespace duckdb
 
     std::string EvalexprRhaiExtension::Version() const
     {
-        return "1.0.1";
+        return "2025120401";
     }
 
 } // namespace duckdb

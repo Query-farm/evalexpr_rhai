@@ -172,6 +172,7 @@ pub extern "C" fn perform_eval(
     engine.register_global_module(RandomPackage::new().as_shared_module());
     engine.register_global_module(FilesystemPackage::new().as_shared_module());
     engine.register_global_module(UrlPackage::new().as_shared_module());
+    engine.register_global_module(SciPackage::new().as_shared_module());
     //    engine.register_global_module(ChronoPackage::new().as_shared_module());
 
     // The json context is optional.

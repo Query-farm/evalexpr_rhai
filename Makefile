@@ -8,7 +8,7 @@ EXT_CONFIG=${PROJ_DIR}extension_config.cmake
 include extension-ci-tools/makefiles/duckdb_extension.Makefile
 
 rust_binding_headers:
-	cd duckdb_evalexpr_rust && cbindgen --config ./cbindgen.toml --crate duckdb_evalexpr_rust --output ../src/include/rust.h
+	cd duckdb_evalexpr_rhai_rust && cbindgen --config ./cbindgen.toml --crate duckdb_evalexpr_rhai_rust --output ../src/include/rust.h
 
 clean_all: clean
-	cd duckdb_evalexpr_rust && cargo clean
+	cd duckdb_evalexpr_rhai_rust && cargo clean
