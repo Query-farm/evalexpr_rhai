@@ -1,8 +1,8 @@
-name: Scheduled Trigger for 1.4
+name: Scheduled Trigger for 1.5
 
 on:
   schedule:
-    - cron: '13 21 * * 5'  # Runs weekly on Friday at 21:13 UTC
+    - cron: '3 16 * * *'  # Runs daily at 16:03 UTC
   workflow_dispatch:  # Allows manual trigger
 
 jobs:
@@ -22,6 +22,6 @@ jobs:
         run: |
           echo "${{ secrets.GITHUB_TOKEN }}" | gh auth login --with-token
 
-      - name: Trigger Workflow on v1.4
+      - name: Trigger Workflow on v1.5
         run: |
-          gh workflow run MainDistributionPipeline.yml --ref v1.4
+          gh workflow run MainDistributionPipeline.yml --ref v1.5
