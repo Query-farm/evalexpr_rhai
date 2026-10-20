@@ -138,3 +138,29 @@ query I
 select sum(length(v)) from (select evalexpr_rhai('"hello_' || ids.n || '"').ok as v from ids) as data;
 ----
 118890
+
+# A constant expression that fails to compile reports the error on every row
+# (the error message is copied into the result before the compile result is freed)
+query II
+SELECT count(*), count(DISTINCT evalexpr_rhai('bad syntax ((', ('{"n": ' || n || '}')::JSON).error) FROM ids;
+----
+10000	1
+
+query I
+SELECT evalexpr_rhai('bad syntax ((', '{}').error;
+----
+Expecting ';' to terminate this statement (line 1, position 5)
+
+# An empty, non-constant expression evaluates to JSON null instead of returning a null string pointer
+query I
+SELECT evalexpr_rhai(e)::VARCHAR FROM (VALUES (''), ('1 + 1'), (NULL)) t(e);
+----
+null
+2
+NULL
+
+# Runtime errors from per-row expressions are returned as errors
+query I
+SELECT evalexpr_rhai(e, '{}').error FROM (VALUES ('throw "boom"')) t(e);
+----
+Runtime error: boom (line 1, position 1)

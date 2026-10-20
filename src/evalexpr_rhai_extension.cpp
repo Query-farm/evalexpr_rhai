@@ -20,6 +20,51 @@
 namespace duckdb
 {
 
+    // Owners of the objects handed out by the Rust library, so they are released on every path
+    // (including when an exception is thrown while the result is being copied into the vector).
+    struct RustCompileResultDeleter
+    {
+        void operator()(ResultCompiledAst *ptr) const
+        {
+            free_result_compiled_ast(ptr);
+        }
+    };
+
+    struct RustAstDeleter
+    {
+        void operator()(CompiledAst *ptr) const
+        {
+            free_ast(ptr);
+        }
+    };
+
+    class RustResultCString
+    {
+    public:
+        explicit RustResultCString(ResultCString value_p) : value(value_p)
+        {
+        }
+        ~RustResultCString()
+        {
+            free_result_cstring(value);
+        }
+        RustResultCString(const RustResultCString &) = delete;
+        RustResultCString &operator=(const RustResultCString &) = delete;
+
+        bool IsError() const
+        {
+            return value.tag == ResultCString::Tag::Err;
+        }
+        const char *Get() const
+        {
+            const char *ptr = IsError() ? value.err._0 : value.ok._0;
+            return ptr ? ptr : "";
+        }
+
+    private:
+        ResultCString value;
+    };
+
     inline void evalexprFunc(DataChunk &args, ExpressionState &state, Vector &result)
     {
 
@@ -37,23 +82,27 @@ namespace duckdb
         auto union_ok_data = FlatVector::GetDataMutable<string_t>(entries[1]);
         auto union_error_data = FlatVector::GetDataMutable<string_t>(entries[2]);
 
-        auto process_result = [&](ResultCString &eval_result, idx_t i)
+        auto set_error = [&](const char *error, idx_t i)
         {
-            if (eval_result.tag == ResultCString::Tag::Err)
+            union_tag_data[i] = 1;
+            FlatVector::ValidityMutable(entries[1]).SetInvalid(i);
+            union_ok_data[i] = "";
+            union_error_data[i] = StringVector::AddStringOrBlob(entries[2], error);
+        };
+
+        // Copies the result into the vector; the Rust string is freed when eval_result goes out of scope.
+        auto process_result = [&](ResultCString result_p, idx_t i)
+        {
+            RustResultCString eval_result(result_p);
+            if (eval_result.IsError())
             {
-                union_tag_data[i] = 1;
-                FlatVector::ValidityMutable(entries[1]).SetInvalid(i);
-                union_ok_data[i] = "";
-                union_error_data[i] = StringVector::AddStringOrBlob(entries[2], eval_result.err._0);
-                free(eval_result.err._0);
+                set_error(eval_result.Get(), i);
             }
             else
             {
                 union_tag_data[i] = 0;
                 FlatVector::ValidityMutable(entries[2]).SetInvalid(i);
-                //                union_ok_data[i] = eval_result.ok._0;
-                union_ok_data[i] = StringVector::AddStringOrBlob(entries[1], eval_result.ok._0);
-                free(eval_result.ok._0);
+                union_ok_data[i] = StringVector::AddStringOrBlob(entries[1], eval_result.Get());
                 union_error_data[i] = "";
             }
         };
@@ -88,40 +137,38 @@ namespace duckdb
                 const auto constant_expression = ConstantVector::GetData<string_t>(expression_vector)->GetString();
 
                 // Compile the expression to an AST.
-                auto expression_as_ast_compiled = compile_ast(constant_expression.c_str(), constant_expression.size());
+                unique_ptr<ResultCompiledAst, RustCompileResultDeleter> expression_as_ast_compiled(
+                    compile_ast(constant_expression.c_str(), constant_expression.size()));
 
                 if (expression_as_ast_compiled->tag == ResultCompiledAst::Tag::Err)
                 {
+                    // The error message is copied into the vector, and freed together with the compile result.
+                    const char *error = expression_as_ast_compiled->err._0 ? expression_as_ast_compiled->err._0 : "";
                     for (idx_t i = 0; i < (is_fully_constant ? 1 : count); i++)
                     {
-                        union_tag_data[i] = 1;
-                        FlatVector::ValidityMutable(entries[1]).SetInvalid(i);
-                        union_ok_data[i] = "";
-                        union_error_data[i] = expression_as_ast_compiled->err._0;
+                        set_error(error, i);
                     }
                 }
                 else
                 {
-                    ResultCString eval_result;
+                    // The compiled AST is owned by us (not by the compile result) and freed when this scope ends.
+                    unique_ptr<CompiledAst, RustAstDeleter> compiled_ast(expression_as_ast_compiled->ok._0);
 
                     for (idx_t i = 0; i < (is_fully_constant ? 1 : count); i++)
                     {
                         auto context_idx = context_json_data ? context_json_vector_unified.sel->get_index(i) : 0;
                         if (context_json_data && context_json_vector_unified.validity.RowIsValid(context_idx))
                         {
-                            eval_result = eval_ast(expression_as_ast_compiled->ok._0,
-                                                   context_json_data[context_idx].GetData(),
-                                                   context_json_data[context_idx].GetSize());
+                            process_result(eval_ast(compiled_ast.get(),
+                                                    context_json_data[context_idx].GetData(),
+                                                    context_json_data[context_idx].GetSize()),
+                                           i);
                         }
                         else
                         {
-                            eval_result = eval_ast(expression_as_ast_compiled->ok._0,
-                                                   nullptr, 0);
+                            process_result(eval_ast(compiled_ast.get(), nullptr, 0), i);
                         }
-
-                        process_result(eval_result, i);
                     }
-                    free_ast(expression_as_ast_compiled->ok._0);
                 }
             }
         }
