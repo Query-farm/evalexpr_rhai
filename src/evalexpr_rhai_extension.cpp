@@ -7,6 +7,11 @@
 #include "duckdb/function/scalar_function.hpp"
 #include "duckdb/planner/expression/bound_function_expression.hpp"
 #include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
+#include "duckdb/common/vector/constant_vector.hpp"
+#include "duckdb/common/vector/flat_vector.hpp"
+#include "duckdb/common/vector/string_vector.hpp"
+#include "duckdb/common/vector/struct_vector.hpp"
+#include "duckdb/common/vector/unified_vector_format.hpp"
 
 // Include the declarations of things from Rust.
 #include "rust.h"
@@ -25,29 +30,29 @@ namespace duckdb
         const auto count = args.size();
 
         UnifiedVectorFormat expression_vector_unified;
-        expression_vector.ToUnifiedFormat(count, expression_vector_unified);
+        expression_vector.ToUnifiedFormat(expression_vector_unified);
 
         auto &entries = StructVector::GetEntries(result);
-        auto union_tag_data = FlatVector::GetData<uint8_t>(*entries[0]);
-        auto union_ok_data = FlatVector::GetData<string_t>(*entries[1]);
-        auto union_error_data = FlatVector::GetData<string_t>(*entries[2]);
+        auto union_tag_data = FlatVector::GetDataMutable<uint8_t>(entries[0]);
+        auto union_ok_data = FlatVector::GetDataMutable<string_t>(entries[1]);
+        auto union_error_data = FlatVector::GetDataMutable<string_t>(entries[2]);
 
         auto process_result = [&](ResultCString &eval_result, idx_t i)
         {
             if (eval_result.tag == ResultCString::Tag::Err)
             {
                 union_tag_data[i] = 1;
-                FlatVector::Validity(*entries[1]).SetInvalid(i);
+                FlatVector::ValidityMutable(entries[1]).SetInvalid(i);
                 union_ok_data[i] = "";
-                union_error_data[i] = StringVector::AddStringOrBlob(*entries[2], eval_result.err._0);
+                union_error_data[i] = StringVector::AddStringOrBlob(entries[2], eval_result.err._0);
                 free(eval_result.err._0);
             }
             else
             {
                 union_tag_data[i] = 0;
-                FlatVector::Validity(*entries[2]).SetInvalid(i);
+                FlatVector::ValidityMutable(entries[2]).SetInvalid(i);
                 //                union_ok_data[i] = eval_result.ok._0;
-                union_ok_data[i] = StringVector::AddStringOrBlob(*entries[1], eval_result.ok._0);
+                union_ok_data[i] = StringVector::AddStringOrBlob(entries[1], eval_result.ok._0);
                 free(eval_result.ok._0);
                 union_error_data[i] = "";
             }
@@ -65,7 +70,7 @@ namespace duckdb
 
             is_fully_constant = expression_is_constant && context_is_constant;
 
-            context_json_vector.ToUnifiedFormat(count, context_json_vector_unified);
+            context_json_vector.ToUnifiedFormat(context_json_vector_unified);
             context_json_data = UnifiedVectorFormat::GetData<string_t>(context_json_vector_unified);
         }
 
@@ -90,7 +95,7 @@ namespace duckdb
                     for (idx_t i = 0; i < (is_fully_constant ? 1 : count); i++)
                     {
                         union_tag_data[i] = 1;
-                        FlatVector::Validity(*entries[1]).SetInvalid(i);
+                        FlatVector::ValidityMutable(entries[1]).SetInvalid(i);
                         union_ok_data[i] = "";
                         union_error_data[i] = expression_as_ast_compiled->err._0;
                     }
@@ -101,11 +106,12 @@ namespace duckdb
 
                     for (idx_t i = 0; i < (is_fully_constant ? 1 : count); i++)
                     {
-                        if (context_json_data && context_json_vector_unified.validity.RowIsValid(context_json_vector_unified.sel->get_index(i)))
+                        auto context_idx = context_json_data ? context_json_vector_unified.sel->get_index(i) : 0;
+                        if (context_json_data && context_json_vector_unified.validity.RowIsValid(context_idx))
                         {
                             eval_result = eval_ast(expression_as_ast_compiled->ok._0,
-                                                   context_json_data[context_is_constant ? 0 : i].GetData(),
-                                                   context_json_data[context_is_constant ? 0 : i].GetSize());
+                                                   context_json_data[context_idx].GetData(),
+                                                   context_json_data[context_idx].GetSize());
                         }
                         else
                         {
@@ -122,7 +128,7 @@ namespace duckdb
         else
         {
             UnifiedVectorFormat expression_vector_unified;
-            expression_vector.ToUnifiedFormat(count, expression_vector_unified);
+            expression_vector.ToUnifiedFormat(expression_vector_unified);
 
             auto expression_data = UnifiedVectorFormat::GetData<string_t>(expression_vector_unified);
             ResultCString eval_result;
@@ -137,17 +143,18 @@ namespace duckdb
                     continue;
                 }
 
-                if (context_json_data && context_json_vector_unified.validity.RowIsValid(context_json_vector_unified.sel->get_index(i)))
+                auto context_idx = context_json_data ? context_json_vector_unified.sel->get_index(i) : 0;
+                if (context_json_data && context_json_vector_unified.validity.RowIsValid(context_idx))
                 {
                     eval_result = perform_eval(
-                        expression_data[i].GetData(), expression_data[i].GetSize(),
-                        context_json_data[context_is_constant ? 0 : i].GetData(),
-                        context_json_data[context_is_constant ? 0 : i].GetSize());
+                        expression_data[idx].GetData(), expression_data[idx].GetSize(),
+                        context_json_data[context_idx].GetData(),
+                        context_json_data[context_idx].GetSize());
                 }
                 else
                 {
                     eval_result = perform_eval(
-                        expression_data[i].GetData(), expression_data[i].GetSize(),
+                        expression_data[idx].GetData(), expression_data[idx].GetSize(),
                         nullptr, 0);
                 }
                 process_result(eval_result, i);
@@ -168,15 +175,16 @@ namespace duckdb
         child_list_t<LogicalType> members = {{"ok", LogicalType::JSON()}, {"error", LogicalType::VARCHAR}};
 
         auto evalexpr_with_context = ScalarFunction({LogicalType::VARCHAR, LogicalType::JSON()}, LogicalType::UNION(members), evalexprFunc);
-        evalexpr_with_context.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-        evalexpr_with_context.stability = FunctionStability::VOLATILE;
+        evalexpr_with_context.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+        evalexpr_with_context.SetVolatile();
         evalexpr_rhai_set.AddFunction(evalexpr_with_context);
 
         auto evalexpr_no_context = ScalarFunction({LogicalType::VARCHAR}, LogicalType::UNION(members), evalexprFunc);
-        evalexpr_no_context.null_handling = FunctionNullHandling::SPECIAL_HANDLING;
-        evalexpr_no_context.stability = FunctionStability::VOLATILE;
+        evalexpr_no_context.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
+        evalexpr_no_context.SetVolatile();
         evalexpr_rhai_set.AddFunction(evalexpr_no_context);
 
+        evalexpr_rhai_set.SetFallible();
         CreateScalarFunctionInfo info(evalexpr_rhai_set);
 
         // Documentation for the single-argument variant
