@@ -254,7 +254,7 @@ namespace duckdb
 
         loader.RegisterFunction(std::move(info));
 
-        QueryFarmSendTelemetry(loader, "evalexpr_rhai", "2026072501");
+        QueryFarmSendTelemetry(loader, "evalexpr_rhai", "2026102001");
     }
 
     void EvalexprRhaiExtension::Load(ExtensionLoader &loader)
@@ -269,7 +269,7 @@ namespace duckdb
 
     std::string EvalexprRhaiExtension::Version() const
     {
-        return "2026072501";
+        return "2026102001";
     }
 
 } // namespace duckdb
