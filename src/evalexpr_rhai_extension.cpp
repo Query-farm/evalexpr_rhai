@@ -1,288 +1,172 @@
 #define DUCKDB_EXTENSION_MAIN
 
 #include "evalexpr_rhai_extension.hpp"
-#include "duckdb.hpp"
+#include "duckdb/common/error_data.hpp"
 #include "duckdb/common/exception.hpp"
-#include "duckdb/common/string_util.hpp"
-#include "duckdb/function/scalar_function.hpp"
-#include "duckdb/planner/expression/bound_function_expression.hpp"
-#include <duckdb/parser/parsed_data/create_scalar_function_info.hpp>
-#include "duckdb/common/vector/constant_vector.hpp"
-#include "duckdb/common/vector/flat_vector.hpp"
-#include "duckdb/common/vector/string_vector.hpp"
-#include "duckdb/common/vector/struct_vector.hpp"
-#include "duckdb/common/vector/unified_vector_format.hpp"
+#include "duckdb/common/file_system.hpp"
+#include "duckdb/main/extension_helper.hpp"
+#include "duckdb/main/extension_load_options.hpp"
+#include "duckdb/main/extension_repository_manager.hpp"
 
-// Include the declarations of things from Rust.
-#include "rust.h"
-#include "query_farm_telemetry.hpp"
+// For DuckDB 2.0 and later this extension is distributed from the Query.Farm extension repository. The build published to the
+// DuckDB community repository only keeps the name. When the user has already added the Query.Farm repository and
+// installed the extension from it, loading this build loads that one; otherwise it explains the remaining steps.
+// It never adds the repository or installs anything itself: trusting a repository is the user's decision.
 
-namespace duckdb
-{
+namespace duckdb {
 
-    // Owners of the objects handed out by the Rust library, so they are released on every path
-    // (including when an exception is thrown while the result is being copied into the vector).
-    struct RustCompileResultDeleter
-    {
-        void operator()(ResultCompiledAst *ptr) const
-        {
-            free_result_compiled_ast(ptr);
-        }
-    };
+static constexpr const char *EXTENSION_NAME = "evalexpr_rhai";
+static constexpr const char *EXTENSION_VERSION = "2026102001";
+static constexpr const char *REPOSITORY_NAME = "query_farm";
+static constexpr const char *REPOSITORY_URL = "https://duckdb-extensions.query.farm";
+static constexpr const char *REPOSITORY_HTTP_URL = "http://duckdb-extensions.query.farm";
+// sha256 fingerprints of the Query.Farm repository signing keys (primary and standby)
+static constexpr const char *REPOSITORY_KEY_FINGERPRINTS[] = {
+    "sha256:b293ba6145db8f51f301618f59a720cb8c0c21e7efc6119aab43ea5c708947b5",
+    "sha256:6959de1c16b783b14d4c904f69361811f737017d79ea7078729a74ec2f7f7753"};
 
-    struct RustAstDeleter
-    {
-        void operator()(CompiledAst *ptr) const
-        {
-            free_ast(ptr);
-        }
-    };
+static string MovedPreamble() {
+	return StringUtil::Format("The %s extension for DuckDB 2.0 and later is distributed from the Query.Farm extension repository, "
+	                          "not the DuckDB community repository.\n\n",
+	                          EXTENSION_NAME);
+}
 
-    class RustResultCString
-    {
-    public:
-        explicit RustResultCString(ResultCString value_p) : value(value_p)
-        {
-        }
-        ~RustResultCString()
-        {
-            free_result_cstring(value);
-        }
-        RustResultCString(const RustResultCString &) = delete;
-        RustResultCString &operator=(const RustResultCString &) = delete;
+static string MoreInformation() {
+	return StringUtil::Format("\n\nMore information: https://query.farm/products/extensions/%s/", EXTENSION_NAME);
+}
 
-        bool IsError() const
-        {
-            return value.tag == ResultCString::Tag::Err;
-        }
-        const char *Get() const
-        {
-            const char *ptr = IsError() ? value.err._0 : value.ok._0;
-            return ptr ? ptr : "";
-        }
+static bool IsInstalledFromRepository(DatabaseInstance &db, FileSystem &fs) {
+	for (auto &directory : ExtensionHelper::GetExtensionDirectoryPath(db, fs)) {
+		auto path = fs.JoinPath(fs.JoinPath(fs.JoinPath(directory, "repositories"), REPOSITORY_NAME),
+		                        string(EXTENSION_NAME) + ".duckdb_extension");
+		if (fs.FileExists(path)) {
+			return true;
+		}
+	}
+	return false;
+}
 
-    private:
-        ResultCString value;
-    };
+// A repository named query_farm is only used when it points at the Query.Farm prefix and pins a Query.Farm signing key.
+static bool IsQueryFarmRepository(const ExtensionRepository &repository) {
+	auto prefix = StringUtil::Lower(repository.path);
+	while (StringUtil::EndsWith(prefix, "/")) {
+		prefix.pop_back();
+	}
+	if (prefix != REPOSITORY_URL && prefix != REPOSITORY_HTTP_URL) {
+		return false;
+	}
+	for (auto &key : repository.public_keys) {
+		auto fingerprint = ExtensionRepositoryManager::GetPublicKeyFingerprint(key);
+		for (auto trusted : REPOSITORY_KEY_FINGERPRINTS) {
+			if (fingerprint == trusted) {
+				return true;
+			}
+		}
+	}
+	return false;
+}
 
-    inline void evalexprFunc(DataChunk &args, ExpressionState &state, Vector &result)
-    {
+static void LoadFromQueryFarmOrExplain(DatabaseInstance &db) {
+	auto &fs = FileSystem::GetFileSystem(db);
+	ExtensionRepository repository;
+	bool has_repository = ExtensionRepositoryManager::TryGetRepository(db, fs, REPOSITORY_NAME, repository);
 
-        auto &expression_vector = args.data[0];
-        auto expression_is_constant = expression_vector.GetVectorType() == VectorType::CONSTANT_VECTOR;
+	if (!has_repository) {
+		throw MissingExtensionException(
+		    "%sAdd the repository and install the extension once:\n"
+		    "\n"
+		    "    SET allow_extension_repositories = 'allowed';\n"
+		    "    CREATE EXTENSION REPOSITORY IF NOT EXISTS %s WITH PREFIX '%s';\n"
+		    "    INSTALL %s FROM %s;\n"
+		    "\n"
+		    "Then load it in each session with:\n"
+		    "\n"
+		    "    LOAD %s FROM %s;%s",
+		    MovedPreamble(), REPOSITORY_NAME, REPOSITORY_URL, EXTENSION_NAME, REPOSITORY_NAME, EXTENSION_NAME,
+		    REPOSITORY_NAME, MoreInformation());
+	}
+	if (!IsQueryFarmRepository(repository)) {
+		throw MissingExtensionException(
+		    "%sA repository named %s is configured with the prefix '%s', but it is not the Query.Farm extension "
+		    "repository: it points somewhere else or does not use the Query.Farm signing keys, so the extension is not "
+		    "loaded from it. Replace it with the Query.Farm repository and reinstall the extension:\n"
+		    "\n"
+		    "    SET allow_extension_repositories = 'allowed';\n"
+		    "    CREATE OR REPLACE EXTENSION REPOSITORY %s WITH PREFIX '%s';\n"
+		    "    FORCE INSTALL %s FROM %s;\n"
+		    "\n"
+		    "Then load it in each session with:\n"
+		    "\n"
+		    "    LOAD %s FROM %s;%s",
+		    MovedPreamble(), REPOSITORY_NAME, repository.path, REPOSITORY_NAME, REPOSITORY_URL, EXTENSION_NAME,
+		    REPOSITORY_NAME, EXTENSION_NAME, REPOSITORY_NAME, MoreInformation());
+	}
+	if (ExtensionRepositoryManager::GetAccess(db) == ExtensionRepositoryAccess::FORBIDDEN) {
+		throw MissingExtensionException("%sThe %s repository is configured, but allow_extension_repositories is set to "
+		                                "'forbidden', so extensions from it cannot be loaded.%s",
+		                                MovedPreamble(), REPOSITORY_NAME, MoreInformation());
+	}
+	if (!IsInstalledFromRepository(db, fs)) {
+		throw MissingExtensionException("%sThe %s repository is already configured. Install the extension from it once:\n"
+		                                "\n"
+		                                "    SET allow_extension_repositories = 'allowed';\n"
+		                                "    INSTALL %s FROM %s;\n"
+		                                "\n"
+		                                "Then load it in each session with:\n"
+		                                "\n"
+		                                "    LOAD %s FROM %s;%s",
+		                                MovedPreamble(), REPOSITORY_NAME, EXTENSION_NAME, REPOSITORY_NAME,
+		                                EXTENSION_NAME, REPOSITORY_NAME, MoreInformation());
+	}
 
-        auto is_fully_constant = expression_is_constant;
-        const auto count = args.size();
+	// The repository is trusted and the extension is installed from it: load that build. DuckDB holds the load lock
+	// for this name while this stub initializes, so the real extension is loaded under an alias; its functions are
+	// registered as usual.
+	ExtensionLoadOptions options(EXTENSION_NAME);
+	options.repository = REPOSITORY_NAME;
+	options.alias = Identifier(string(EXTENSION_NAME) + "_" + REPOSITORY_NAME);
+	try {
+		ExtensionHelper::LoadExternalExtension(db, fs, options);
+	} catch (std::exception &ex) {
+		ErrorData error(ex);
+		if (error.Type() != ExceptionType::IO || !StringUtil::Contains(error.RawMessage(), "signature")) {
+			throw;
+		}
+		throw MissingExtensionException(
+		    "%sThe %s extension installed from the %s repository failed signature verification. The file may be "
+		    "damaged, or it was signed with a key that this repository definition does not trust. Reinstall it:\n"
+		    "\n"
+		    "    SET allow_extension_repositories = 'allowed';\n"
+		    "    FORCE INSTALL %s FROM %s;\n"
+		    "\n"
+		    "If loading still fails the same way, refresh the repository's signing keys and reinstall:\n"
+		    "\n"
+		    "    CREATE OR REPLACE EXTENSION REPOSITORY %s WITH PREFIX '%s';\n"
+		    "    FORCE INSTALL %s FROM %s;\n"
+		    "\n"
+		    "Do not use -unsigned to work around this.%s",
+		    MovedPreamble(), EXTENSION_NAME, REPOSITORY_NAME, EXTENSION_NAME, REPOSITORY_NAME, REPOSITORY_NAME,
+		    REPOSITORY_URL, EXTENSION_NAME, REPOSITORY_NAME, MoreInformation());
+	}
+}
 
-        UnifiedVectorFormat expression_vector_unified;
-        expression_vector.ToUnifiedFormat(expression_vector_unified);
+void Evalexpr_rhaiExtension::Load(ExtensionLoader &loader) {
+	LoadFromQueryFarmOrExplain(loader.GetDatabaseInstance());
+}
 
-        auto &entries = StructVector::GetEntries(result);
-        auto union_tag_data = FlatVector::GetDataMutable<uint8_t>(entries[0]);
-        auto union_ok_data = FlatVector::GetDataMutable<string_t>(entries[1]);
-        auto union_error_data = FlatVector::GetDataMutable<string_t>(entries[2]);
+std::string Evalexpr_rhaiExtension::Name() {
+	return EXTENSION_NAME;
+}
 
-        auto set_error = [&](const char *error, idx_t i)
-        {
-            union_tag_data[i] = 1;
-            FlatVector::ValidityMutable(entries[1]).SetInvalid(i);
-            union_ok_data[i] = "";
-            union_error_data[i] = StringVector::AddStringOrBlob(entries[2], error);
-        };
-
-        // Copies the result into the vector; the Rust string is freed when eval_result goes out of scope.
-        auto process_result = [&](ResultCString result_p, idx_t i)
-        {
-            RustResultCString eval_result(result_p);
-            if (eval_result.IsError())
-            {
-                set_error(eval_result.Get(), i);
-            }
-            else
-            {
-                union_tag_data[i] = 0;
-                FlatVector::ValidityMutable(entries[2]).SetInvalid(i);
-                union_ok_data[i] = StringVector::AddStringOrBlob(entries[1], eval_result.Get());
-                union_error_data[i] = "";
-            }
-        };
-
-        const string_t *context_json_data = nullptr;
-        UnifiedVectorFormat context_json_vector_unified;
-        bool context_is_constant = false;
-
-        if (args.ColumnCount() == 2)
-        {
-            // There can be a context column.
-            auto &context_json_vector = args.data[1];
-            context_is_constant = context_json_vector.GetVectorType() == VectorType::CONSTANT_VECTOR;
-
-            is_fully_constant = expression_is_constant && context_is_constant;
-
-            context_json_vector.ToUnifiedFormat(context_json_vector_unified);
-            context_json_data = UnifiedVectorFormat::GetData<string_t>(context_json_vector_unified);
-        }
-
-        // If the expression to evaluate is constant cache the compiled AST then just
-        // evaluate that.
-        if (expression_is_constant)
-        {
-            if (ConstantVector::IsNull(expression_vector))
-            {
-                result.SetVectorType(VectorType::CONSTANT_VECTOR);
-                ConstantVector::SetNull(result, true);
-            }
-            else
-            {
-                const auto constant_expression = ConstantVector::GetData<string_t>(expression_vector)->GetString();
-
-                // Compile the expression to an AST.
-                unique_ptr<ResultCompiledAst, RustCompileResultDeleter> expression_as_ast_compiled(
-                    compile_ast(constant_expression.c_str(), constant_expression.size()));
-
-                if (expression_as_ast_compiled->tag == ResultCompiledAst::Tag::Err)
-                {
-                    // The error message is copied into the vector, and freed together with the compile result.
-                    const char *error = expression_as_ast_compiled->err._0 ? expression_as_ast_compiled->err._0 : "";
-                    for (idx_t i = 0; i < (is_fully_constant ? 1 : count); i++)
-                    {
-                        set_error(error, i);
-                    }
-                }
-                else
-                {
-                    // The compiled AST is owned by us (not by the compile result) and freed when this scope ends.
-                    unique_ptr<CompiledAst, RustAstDeleter> compiled_ast(expression_as_ast_compiled->ok._0);
-
-                    for (idx_t i = 0; i < (is_fully_constant ? 1 : count); i++)
-                    {
-                        auto context_idx = context_json_data ? context_json_vector_unified.sel->get_index(i) : 0;
-                        if (context_json_data && context_json_vector_unified.validity.RowIsValid(context_idx))
-                        {
-                            process_result(eval_ast(compiled_ast.get(),
-                                                    context_json_data[context_idx].GetData(),
-                                                    context_json_data[context_idx].GetSize()),
-                                           i);
-                        }
-                        else
-                        {
-                            process_result(eval_ast(compiled_ast.get(), nullptr, 0), i);
-                        }
-                    }
-                }
-            }
-        }
-        else
-        {
-            UnifiedVectorFormat expression_vector_unified;
-            expression_vector.ToUnifiedFormat(expression_vector_unified);
-
-            auto expression_data = UnifiedVectorFormat::GetData<string_t>(expression_vector_unified);
-            ResultCString eval_result;
-
-            for (idx_t i = 0; i < (is_fully_constant ? 1 : count); i++)
-            {
-                auto idx = expression_vector_unified.sel->get_index(i);
-
-                if (!expression_vector_unified.validity.RowIsValid(idx))
-                {
-                    FlatVector::SetNull(result, i, true);
-                    continue;
-                }
-
-                auto context_idx = context_json_data ? context_json_vector_unified.sel->get_index(i) : 0;
-                if (context_json_data && context_json_vector_unified.validity.RowIsValid(context_idx))
-                {
-                    eval_result = perform_eval(
-                        expression_data[idx].GetData(), expression_data[idx].GetSize(),
-                        context_json_data[context_idx].GetData(),
-                        context_json_data[context_idx].GetSize());
-                }
-                else
-                {
-                    eval_result = perform_eval(
-                        expression_data[idx].GetData(), expression_data[idx].GetSize(),
-                        nullptr, 0);
-                }
-                process_result(eval_result, i);
-            }
-        }
-
-        if (is_fully_constant)
-        {
-            result.SetVectorType(VectorType::CONSTANT_VECTOR);
-        }
-    }
-
-    // Extension initalization.
-    static void LoadInternal(ExtensionLoader &loader)
-    {
-        ScalarFunctionSet evalexpr_rhai_set("evalexpr_rhai");
-
-        child_list_t<LogicalType> members = {{"ok", LogicalType::JSON()}, {"error", LogicalType::VARCHAR}};
-
-        auto evalexpr_with_context = ScalarFunction({LogicalType::VARCHAR, LogicalType::JSON()}, LogicalType::UNION(members), evalexprFunc);
-        evalexpr_with_context.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-        evalexpr_with_context.SetVolatile();
-        evalexpr_rhai_set.AddFunction(evalexpr_with_context);
-
-        auto evalexpr_no_context = ScalarFunction({LogicalType::VARCHAR}, LogicalType::UNION(members), evalexprFunc);
-        evalexpr_no_context.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
-        evalexpr_no_context.SetVolatile();
-        evalexpr_rhai_set.AddFunction(evalexpr_no_context);
-
-        evalexpr_rhai_set.SetFallible();
-        CreateScalarFunctionInfo info(evalexpr_rhai_set);
-
-        // Documentation for the single-argument variant
-        FunctionDescription desc_no_context;
-        desc_no_context.parameter_names = {"expression"};
-        desc_no_context.parameter_types = {LogicalType::VARCHAR};
-        desc_no_context.description = "Evaluate a Rhai scripting language expression and return the result as JSON";
-        desc_no_context.examples = {"evalexpr_rhai('40 + 2')", "evalexpr_rhai('[1, 2, 3].map(|x| x * 2)')"};
-        desc_no_context.categories = {"scripting", "json"};
-        info.descriptions.push_back(std::move(desc_no_context));
-
-        // Documentation for the two-argument variant with context
-        FunctionDescription desc_with_context;
-        desc_with_context.parameter_names = {"expression", "context"};
-        desc_with_context.parameter_types = {LogicalType::VARCHAR, LogicalType::JSON()};
-        desc_with_context.description = "Evaluate a Rhai scripting language expression with a JSON context object accessible as 'context'";
-        desc_with_context.examples = {"evalexpr_rhai('context.x + context.y', '{\"x\": 10, \"y\": 20}')", "evalexpr_rhai('context.items.len()', '{\"items\": [1, 2, 3]}')"};
-        desc_with_context.categories = {"scripting", "json"};
-        info.descriptions.push_back(std::move(desc_with_context));
-
-        loader.RegisterFunction(std::move(info));
-
-        QueryFarmSendTelemetry(loader, "evalexpr_rhai", "2026102001");
-    }
-
-    void EvalexprRhaiExtension::Load(ExtensionLoader &loader)
-    {
-        LoadInternal(loader);
-    }
-
-    std::string EvalexprRhaiExtension::Name()
-    {
-        return "evalexpr_rhai";
-    }
-
-    std::string EvalexprRhaiExtension::Version() const
-    {
-        return "2026102001";
-    }
+std::string Evalexpr_rhaiExtension::Version() const {
+	return EXTENSION_VERSION;
+}
 
 } // namespace duckdb
 
-extern "C"
-{
+extern "C" {
 
-    DUCKDB_CPP_EXTENSION_ENTRY(evalexpr_rhai, loader)
-    {
-        duckdb::LoadInternal(loader);
-    }
+DUCKDB_CPP_EXTENSION_ENTRY(evalexpr_rhai, loader) {
+	duckdb::LoadFromQueryFarmOrExplain(loader.GetDatabaseInstance());
 }
-
-#ifndef DUCKDB_EXTENSION_MAIN
-#error DUCKDB_EXTENSION_MAIN not defined
-#endif
+}
