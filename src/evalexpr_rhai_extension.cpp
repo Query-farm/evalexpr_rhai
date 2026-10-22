@@ -215,18 +215,23 @@ namespace duckdb
     }
 
     // Extension initalization.
+    // Declares a positional-only parameter with a real name, so duckdb_functions() reports it instead of col<N>.
+    static FunctionParameter Positional(const char *name, LogicalType type) {
+        return FunctionParameter(name, std::move(type), {}, FunctionParameterKind::POSITIONAL_ONLY);
+    }
+
     static void LoadInternal(ExtensionLoader &loader)
     {
         ScalarFunctionSet evalexpr_rhai_set("evalexpr_rhai");
 
         child_list_t<LogicalType> members = {{"ok", LogicalType::JSON()}, {"error", LogicalType::VARCHAR}};
 
-        auto evalexpr_with_context = ScalarFunction({LogicalType::VARCHAR, LogicalType::JSON()}, LogicalType::UNION(members), evalexprFunc);
+        auto evalexpr_with_context = ScalarFunction({Positional("expression", LogicalType::VARCHAR), Positional("context", LogicalType::JSON())}, LogicalType::UNION(members), evalexprFunc);
         evalexpr_with_context.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
         evalexpr_with_context.SetVolatile();
         evalexpr_rhai_set.AddFunction(evalexpr_with_context);
 
-        auto evalexpr_no_context = ScalarFunction({LogicalType::VARCHAR}, LogicalType::UNION(members), evalexprFunc);
+        auto evalexpr_no_context = ScalarFunction({Positional("expression", LogicalType::VARCHAR)}, LogicalType::UNION(members), evalexprFunc);
         evalexpr_no_context.SetNullHandling(FunctionNullHandling::SPECIAL_HANDLING);
         evalexpr_no_context.SetVolatile();
         evalexpr_rhai_set.AddFunction(evalexpr_no_context);
@@ -254,7 +259,7 @@ namespace duckdb
 
         loader.RegisterFunction(std::move(info));
 
-        QueryFarmSendTelemetry(loader, "evalexpr_rhai", "2026102001");
+        QueryFarmSendTelemetry(loader, "evalexpr_rhai", "2026102101");
     }
 
     void EvalexprRhaiExtension::Load(ExtensionLoader &loader)
@@ -269,7 +274,7 @@ namespace duckdb
 
     std::string EvalexprRhaiExtension::Version() const
     {
-        return "2026102001";
+        return "2026102101";
     }
 
 } // namespace duckdb

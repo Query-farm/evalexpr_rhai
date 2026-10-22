@@ -1,0 +1,27 @@
+# name: test/sql/evalexpr_rhai_parameter_names.test
+# description: duckdb_functions() reports the declared parameter names instead of col<N>
+# group: [evalexpr_rhai]
+
+require evalexpr_rhai
+
+require json
+
+query II
+SELECT DISTINCT function_name, parameters FROM duckdb_functions()
+WHERE function_name IN ('evalexpr_rhai')
+ORDER BY ALL;
+----
+evalexpr_rhai	[expression]
+evalexpr_rhai	[expression, context]
+
+# The parameters are still positional: calls work as before
+
+query I
+SELECT evalexpr_rhai('42+4').ok::integer;
+----
+46
+
+query I
+SELECT evalexpr_rhai('context.x + context.y', '{"x": 10, "y": 20}').ok::integer;
+----
+30
