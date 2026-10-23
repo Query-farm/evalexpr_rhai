@@ -7,26 +7,17 @@
   </a>
 </p>
 
-# Rhai Extension for DuckDB
+# Rhai (evalexpr_rhai) Extension for DuckDB
 
-[![DuckDB](https://img.shields.io/badge/DuckDB-community_extension-fdf1e0?logo=duckdb&logoColor=fff000)](https://duckdb.org/community_extensions/extensions/evalexpr_rhai.html)
-[![v1.5 build](https://github.com/Query-farm/evalexpr_rhai/actions/workflows/MainDistributionPipeline.yml/badge.svg?branch=v1.5)](https://github.com/Query-farm/evalexpr_rhai/actions/workflows/MainDistributionPipeline.yml?query=branch%3Av1.5)
+[![DuckDB](https://img.shields.io/badge/DuckDB-extension-fdf1e0?logo=duckdb&logoColor=fff000)](https://query.farm/products/extensions/evalexpr_rhai/)
+[![v2.0 build](https://github.com/Query-farm/evalexpr_rhai/actions/workflows/MainDistributionPipeline.yml/badge.svg?branch=v2.0)](https://github.com/Query-farm/evalexpr_rhai/actions/workflows/MainDistributionPipeline.yml?query=branch%3Av2.0)
 
-This extension, `evalexpr_rhai`, adds functions that allow the [Rhai](https://rhai.rs) scripting language to be evaluated within [DuckDB](https://duckdb.org) SQL statements.
+Run Rhai scripts inside DuckDB SQL queries.
 
 ## Documentation
 
 Full documentation, including installation, usage, the function reference, and cookbook examples, is available at:
 
-**[https://query.farm/products/extensions/evalexpr_rhai](https://query.farm/products/extensions/evalexpr_rhai)**
+**[https://query.farm/products/extensions/evalexpr_rhai/](https://query.farm/products/extensions/evalexpr_rhai/)**
 
-## Installation
-
-```sql
-INSTALL evalexpr_rhai FROM community;
-LOAD evalexpr_rhai;
-```
-
-## Development
-
-For instructions on building the extension from source and running its tests, see [BUILDING.md](BUILDING.md).
+[Build and test](BUILDING.md)
