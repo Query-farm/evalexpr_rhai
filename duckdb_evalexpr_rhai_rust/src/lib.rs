@@ -130,6 +130,10 @@ fn new_engine(
     engine.register_global_module(UrlPackage::new().as_shared_module());
     engine.register_global_module(SciPackage::new().as_shared_module());
 
+    // Engine::new() installs a FileModuleResolver, which lets `import "path"` load and run any
+    // .rhai file on the host. Scripts must not reach the filesystem, so imports always fail.
+    engine.set_module_resolver(rhai::module_resolvers::DummyModuleResolver::new());
+
     // print() and debug() would otherwise write to the stdout/stderr of the DuckDB process.
     engine.on_print(|_| {});
     engine.on_debug(|_, _, _| {});
