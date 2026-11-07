@@ -1,0 +1,55 @@
+# name: test/sql/evalexpr_rhai_security.test
+# description: scripts cannot reach the host filesystem, network or process output
+# group: [evalexpr_rhai]
+
+require evalexpr_rhai
+
+require json
+
+# The rhai-fs filesystem package is not registered (it used to bypass enable_external_access).
+query I
+SELECT evalexpr_rhai('let f = open_file("/etc/hostname"); f.read_string()').error LIKE 'Function not found: open_file%';
+----
+true
+
+query I
+SELECT evalexpr_rhai('path("/tmp")').error LIKE 'Function not found: path%';
+----
+true
+
+query I
+SELECT evalexpr_rhai('cwd()').error LIKE 'Function not found: cwd%';
+----
+true
+
+# rhai-sci is built without its io feature (file / URL reading).
+query I
+SELECT evalexpr_rhai('read_matrix("/etc/hostname")').error LIKE 'Function not found: read_matrix%';
+----
+true
+
+# Module imports are not available either.
+query I
+SELECT evalexpr_rhai('import "/etc/hostname" as m; 1').error IS NOT NULL;
+----
+true
+
+# print() / debug() are accepted but do not write to the process' stdout / stderr.
+query I
+SELECT evalexpr_rhai('print("hello"); debug("hello"); 7').ok::INTEGER;
+----
+7
+
+# With external access disabled, plain evaluation still works and the filesystem is still unreachable.
+statement ok
+SET enable_external_access = false;
+
+query I
+SELECT evalexpr_rhai('40 + 2').ok::INTEGER;
+----
+42
+
+query I
+SELECT evalexpr_rhai('open_file("/etc/hostname")').error LIKE 'Function not found: open_file%';
+----
+true

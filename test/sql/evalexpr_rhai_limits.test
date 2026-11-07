@@ -1,0 +1,171 @@
+# name: test/sql/evalexpr_rhai_limits.test
+# description: evaluation is bounded by the evalexpr_rhai_max_* settings
+# group: [evalexpr_rhai]
+
+require evalexpr_rhai
+
+require json
+
+# An infinite loop stops at the default operation limit instead of hanging the query.
+query I
+SELECT evalexpr_rhai('loop {}').error LIKE 'Too many operations%';
+----
+true
+
+statement ok
+SET evalexpr_rhai_max_operations = 1000;
+
+query I
+SELECT evalexpr_rhai('let n = 0; for i in 0..100000 { n += i; } n').error LIKE 'Too many operations%';
+----
+true
+
+query I
+SELECT evalexpr_rhai('let n = 0; for i in 0..10 { n += i; } n').ok::INTEGER;
+----
+45
+
+# The limits also apply to non-constant expressions.
+query I
+SELECT evalexpr_rhai(e).error LIKE 'Too many operations%' FROM (VALUES ('loop {}'), ('loop { 1 }')) t(e);
+----
+true
+true
+
+statement ok
+RESET evalexpr_rhai_max_operations;
+
+# String size
+statement ok
+SET evalexpr_rhai_max_string_size = 10;
+
+query I
+SELECT evalexpr_rhai('let s = ""; for i in 0..100 { s += "x"; } s').error LIKE 'Length of string%';
+----
+true
+
+query I
+SELECT evalexpr_rhai('"short"').ok;
+----
+"short"
+
+statement ok
+RESET evalexpr_rhai_max_string_size;
+
+# Doubling a string is stopped by the default string limit
+query I
+SELECT evalexpr_rhai('let s = "x"; loop { s += s; }').error LIKE 'Length of string%';
+----
+true
+
+# Array size (counts nested elements too)
+statement ok
+SET evalexpr_rhai_max_array_size = 5;
+
+query I
+SELECT evalexpr_rhai('let a = []; for i in 0..10 { a.push(i); } a').error LIKE 'Size of array%';
+----
+true
+
+query I
+SELECT evalexpr_rhai('[1, 2, 3]').ok;
+----
+[1,2,3]
+
+statement ok
+RESET evalexpr_rhai_max_array_size;
+
+# Map size
+statement ok
+SET evalexpr_rhai_max_map_size = 2;
+
+query I
+SELECT evalexpr_rhai('#{a: 1, b: 2, c: 3}').error LIKE 'Number of properties in object map literal exceeds the maximum limit (2)%';
+----
+true
+
+query I
+SELECT evalexpr_rhai('let m = #{}; for i in 0..10 { m.mixin(#{x: i, y: i + 1, z: 1}); } m').error LIKE 'Number of properties in object map%';
+----
+true
+
+query I
+SELECT evalexpr_rhai('#{a: 1, b: 2}').ok;
+----
+{"a":1,"b":2}
+
+statement ok
+RESET evalexpr_rhai_max_map_size;
+
+# Call depth
+statement ok
+SET evalexpr_rhai_max_call_levels = 10;
+
+query I
+SELECT evalexpr_rhai('fn f(n) { if n == 0 { 0 } else { 1 + f(n - 1) } } f(100)').error LIKE '%Stack overflow%';
+----
+true
+
+query I
+SELECT evalexpr_rhai('fn f(n) { if n == 0 { 0 } else { 1 + f(n - 1) } } f(5)').ok::INTEGER;
+----
+5
+
+statement ok
+RESET evalexpr_rhai_max_call_levels;
+
+# Unbounded recursion is stopped by the default call depth.
+query I
+SELECT evalexpr_rhai('fn f(n) { f(n + 1) } f(0)').error LIKE '%Stack overflow%';
+----
+true
+
+# 0 disables a limit.
+statement ok
+SET evalexpr_rhai_max_operations = 0;
+
+query I
+SELECT evalexpr_rhai('let n = 0; for i in 0..1000 { n += 1; } n').ok::INTEGER;
+----
+1000
+
+statement ok
+RESET evalexpr_rhai_max_operations;
+
+# Deeply nested results are rejected instead of overflowing the stack.
+query I
+SELECT evalexpr_rhai('let a = []; for i in 0..3000 { a = [a]; } a').error LIKE '%nested more than 128 levels%';
+----
+true
+
+# ... while deeply nested intermediate values are fine.
+query I
+SELECT evalexpr_rhai('let a = []; for i in 0..3000 { a = [a]; } a == a').ok;
+----
+true
+
+query I
+SELECT evalexpr_rhai('let a = []; for i in 0..100 { a = [a]; } a').ok IS NOT NULL;
+----
+true
+
+# Settings can be changed between queries (each query creates fresh engines).
+statement ok
+SET evalexpr_rhai_max_operations = 10;
+
+query I
+SELECT evalexpr_rhai('let n = 0; for i in 0..100 { n += i; } n').error IS NOT NULL;
+----
+true
+
+statement ok
+RESET evalexpr_rhai_max_operations;
+
+query I
+SELECT evalexpr_rhai('let n = 0; for i in 0..100 { n += i; } n').ok::INTEGER;
+----
+4950
+
+statement error
+SET evalexpr_rhai_max_operations = -1;
+----

@@ -6,36 +6,18 @@
 #include <new>
 
 
-/// A compiled AST
-///
-/// This struct is used to store the compiled AST and the engine that compiled it.
-/// need to be freed using the `free_ast` function.
-struct CompiledAst;
+/// A Rhai engine with its packages registered, the configured limits applied, and a cache of
+/// compiled expressions. One is created per DuckDB thread (function local state) and must be
+/// released with `evalexpr_engine_free`. It is not thread safe.
+struct EvalEngine;
 
-/// A result of a compiled AST
-///
-/// This enum is used to return the result of a compiled AST. It can either be an
-/// `Ok` with a pointer to a `CompiledAst` or an `Err` with a pointer to a `c_char`
-/// that contains the error message.
-struct ResultCompiledAst {
-  enum class Tag {
-    Ok,
-    Err,
-  };
-
-  struct Ok_Body {
-    CompiledAst *_0;
-  };
-
-  struct Err_Body {
-    char *_0;
-  };
-
-  Tag tag;
-  union {
-    Ok_Body ok;
-    Err_Body err;
-  };
+/// One expression (and optional JSON context) to evaluate. A null/empty context means the
+/// script runs without a `context` variable.
+struct EvalInput {
+  const char *expression;
+  size_t expression_len;
+  const char *context_json;
+  size_t context_len;
 };
 
 struct ResultCString {
@@ -59,44 +41,51 @@ struct ResultCString {
   };
 };
 
+/// Resource limits applied to every evaluation. A value of 0 means "unlimited".
+struct EvalLimits {
+  /// Maximum number of Rhai operations per evaluation.
+  uint64_t max_operations;
+  /// Maximum length (in bytes) of any string.
+  uint64_t max_string_size;
+  /// Maximum number of elements in any array.
+  uint64_t max_array_size;
+  /// Maximum number of properties in any object map.
+  uint64_t max_map_size;
+  /// Maximum depth of nested function calls.
+  uint64_t max_call_levels;
+};
+
+/// Callback polled while a script runs; returns true when the query was interrupted.
+using InterruptCallback = bool(*)(void*);
+
 
 extern "C" {
 
-/// Compile an expression into an AST
+/// Evaluate `count` expressions, writing one result per input into `results`.
 ///
-/// The returned pointer must be released with `free_result_compiled_ast`. On success the
-/// compiled AST it contains is owned by the caller and must be released with `free_ast`.
-ResultCompiledAst *compile_ast(const char *expression, size_t expression_len);
+/// Each expression is compiled once and cached in the engine. Every result written (the JSON
+/// result, or an error message) must be released with `free_result_cstring`.
+void evalexpr_engine_eval_batch(EvalEngine *engine,
+                                const EvalInput *inputs,
+                                size_t count,
+                                ResultCString *results);
 
-/// Evaluate an AST with a context
+/// Free an engine created by `evalexpr_engine_new`.
+void evalexpr_engine_free(EvalEngine *engine);
+
+/// Create an evaluation engine.
 ///
-/// The context is a JSON string that will be deserialized into a `Dynamic` object
-/// and passed to the AST evaluation. The returned string must be released with
-/// `free_result_cstring`.
-ResultCString eval_ast(CompiledAst *compiled, const char *context_json, size_t context_len);
-
-void free_ast(CompiledAst *ptr);
+/// `interrupt` (optional) is polled with `interrupt_data` while scripts run; when it returns
+/// true the running script is terminated. Returns null only if engine creation panicked.
+/// The engine must be released with `evalexpr_engine_free`.
+EvalEngine *evalexpr_engine_new(EvalLimits limits,
+                                InterruptCallback interrupt,
+                                void *interrupt_data);
 
 /// Free a string returned by this library.
 void free_c_string(char *ptr);
 
-/// Free the result of `compile_ast`.
-///
-/// This frees the result itself and, for an error, its message. The compiled AST of a
-/// successful result is NOT freed (it is released separately with `free_ast`).
-void free_result_compiled_ast(ResultCompiledAst *ptr);
-
 /// Free the string held by a `ResultCString` (either the value or the error).
 void free_result_cstring(ResultCString result);
-
-/// Evaluate an expression with a optional context
-///
-/// The context is a JSON string that will be deserialized into a `Dynamic` object
-/// and passed to the expression evaluation. The returned string must be released with
-/// `free_result_cstring`.
-ResultCString perform_eval(const char *expression,
-                           size_t expression_len,
-                           const char *context_json,
-                           size_t context_len);
 
 }  // extern "C"

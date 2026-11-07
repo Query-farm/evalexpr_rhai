@@ -1,0 +1,169 @@
+# name: test/sql/evalexpr_rhai_inputs.test
+# description: NULLs, constant / non-constant arguments, malformed context, Unicode and packages
+# group: [evalexpr_rhai]
+
+require evalexpr_rhai
+
+require json
+
+# NULL expression -> NULL
+query I
+SELECT evalexpr_rhai(NULL) IS NULL;
+----
+true
+
+query I
+SELECT evalexpr_rhai(NULL, '{"a": 1}') IS NULL;
+----
+true
+
+# NULL context -> evaluated without a context variable
+query I
+SELECT evalexpr_rhai('1 + 2', NULL).ok::INTEGER;
+----
+3
+
+query I
+SELECT evalexpr_rhai('context', NULL).error;
+----
+Variable not found: context (line 1, position 1)
+
+# Malformed JSON context is rejected by DuckDB's JSON cast before it reaches the script
+statement error
+SELECT evalexpr_rhai('context', '{"a": '::VARCHAR);
+----
+Malformed JSON
+
+query II
+SELECT c, evalexpr_rhai('context.a', c) FROM (VALUES ('{"a": 1}'::JSON), (NULL), ('{"a": [1, {"b": null}]}'), ('[1]'), ('"text"')) t(c) ORDER BY ALL;
+----
+"text"	Unknown property 'a' - a getter is not registered for type 'string' (line 1, position 9)
+[1]	Unknown property 'a' - a getter is not registered for type 'array' (line 1, position 9)
+{"a": 1}	1
+{"a": [1, {"b": null}]}	[1,{"b":null}]
+NULL	Variable not found: context (line 1, position 1)
+
+# Deeply nested JSON context is rejected by the JSON parser's recursion limit, not a crash
+query I
+SELECT evalexpr_rhai('1', repeat('[', 10000) || repeat(']', 10000)).error LIKE 'JSON context was not well formed%';
+----
+true
+
+# Constant expression, non-constant context
+query II
+SELECT n, evalexpr_rhai('context.n * 2', {'n': n}).ok::INTEGER FROM range(4) t(n) ORDER BY n;
+----
+0	0
+1	2
+2	4
+3	6
+
+# Non-constant expression, constant context
+query II
+SELECT e, evalexpr_rhai(e, '{"x": 5}').ok::INTEGER FROM (VALUES ('context.x + 1'), ('context.x * context.x'), ('0')) t(e) ORDER BY e;
+----
+0	0
+context.x * context.x	25
+context.x + 1	6
+
+# Non-constant expression and context, with NULLs and errors mixed in
+query III
+SELECT id, evalexpr_rhai(e, c).ok, evalexpr_rhai(e, c).error FROM (VALUES
+    (1, 'context.v + 1', '{"v": 1}'),
+    (2, NULL, '{"v": 2}'),
+    (3, 'context.v', NULL),
+    (4, 'throw "bad " + context.v', '{"v": 4}'),
+    (5, 'context.v.len()', '{"v": "héllo 🦆"}')
+) t(id, e, c) ORDER BY id;
+----
+1	2	NULL
+2	NULL	NULL
+3	NULL	Variable not found: context (line 1, position 1)
+4	NULL	Runtime error: bad 4 (line 1, position 1)
+5	7	NULL
+
+# The same expression appearing on many rows (compiled once and cached per thread)
+query II
+SELECT count(*), sum(evalexpr_rhai(e, {'n': n}).ok::BIGINT) FROM (SELECT CASE WHEN n % 2 = 0 THEN 'context.n' ELSE 'context.n * 10' END AS e, n FROM range(10000) t(n));
+----
+10000	274995000
+
+# Many distinct expressions (more than the per-thread cache holds)
+query I
+SELECT sum(evalexpr_rhai(n::VARCHAR || ' + 1').ok::BIGINT) FROM range(5000) t(n);
+----
+12502500
+
+# Compile errors are cached, and still reported on every row
+query I
+SELECT count(*) FROM (SELECT evalexpr_rhai(CASE WHEN n % 2 = 0 THEN '((' ELSE '((' END).error AS e FROM range(1000) t(n)) WHERE e = 'Script is incomplete (line 1, position 3)';
+----
+1000
+
+# Unicode in scripts, strings and results
+query I
+SELECT evalexpr_rhai('"🦆 " + context.name', '{"name": "Zoë"}').ok;
+----
+"🦆 Zoë"
+
+query I
+SELECT evalexpr_rhai('let ü = 3; ü * 2').error IS NOT NULL OR evalexpr_rhai('let ü = 3; ü * 2').ok::INTEGER = 6;
+----
+true
+
+# Empty expression evaluates to JSON null
+query I
+SELECT evalexpr_rhai('').ok;
+----
+null
+
+# Unit results are JSON null as well
+query I
+SELECT evalexpr_rhai('let x = 1;').ok;
+----
+null
+
+# Non-finite floats cannot be represented in JSON
+query I
+SELECT evalexpr_rhai('1.0 / 0.0').ok;
+----
+null
+
+# Packages: random numbers (the function is VOLATILE)
+query I
+SELECT evalexpr_rhai('let r = rand_float(); r >= 0.0 && r < 1.0').ok;
+----
+true
+
+query I
+SELECT count(DISTINCT evalexpr_rhai('rand()').ok) > 1 FROM range(100);
+----
+true
+
+query I
+SELECT evalexpr_rhai('let a = [1, 2, 3, 4]; a.shuffle(); a.len()').ok::INTEGER;
+----
+4
+
+# Packages: URL parsing (no network access)
+query I
+SELECT evalexpr_rhai('let u = Url("https://query.farm/products?x=1#top"); u.domain + u.path + "|" + u.query').ok;
+----
+"query.farm/products|x=1"
+
+# Packages: scientific functions
+query I
+SELECT evalexpr_rhai('max([1, 5, 3])').ok::INTEGER;
+----
+5
+
+query I
+SELECT evalexpr_rhai('mean([1.0, 2.0, 3.0])').ok::DOUBLE;
+----
+2.0
+
+# Results inside larger queries
+query I
+SELECT list(evalexpr_rhai('context * 2', n::VARCHAR).ok::INTEGER ORDER BY n) FROM range(3) t(n);
+----
+[0, 2, 4]

@@ -1,0 +1,36 @@
+# name: test/sql/evalexpr_rhai_metadata.test
+# description: every evalexpr_rhai overload is documented in duckdb_functions()
+# group: [evalexpr_rhai]
+
+require evalexpr_rhai
+
+require json
+
+# Every overload has a description, at least one example, categories, and real parameter names.
+query I
+SELECT count(*) FROM duckdb_functions()
+WHERE function_name = 'evalexpr_rhai'
+  AND (description IS NULL OR description = ''
+       OR examples IS NULL OR len(examples) = 0
+       OR categories IS NULL OR len(categories) = 0
+       OR list_contains(parameters, 'col0'));
+----
+0
+
+query IIII
+SELECT parameters, parameter_types, categories, stability FROM duckdb_functions()
+WHERE function_name = 'evalexpr_rhai'
+ORDER BY len(parameters);
+----
+[expression]	[VARCHAR]	[scripting, json]	VOLATILE
+[expression, context]	[VARCHAR, JSON]	[scripting, json]	VOLATILE
+
+# The limit settings are registered with their defaults.
+query II
+SELECT name, value FROM duckdb_settings() WHERE name LIKE 'evalexpr_rhai_%' ORDER BY name;
+----
+evalexpr_rhai_max_array_size	1000000
+evalexpr_rhai_max_call_levels	64
+evalexpr_rhai_max_map_size	1000000
+evalexpr_rhai_max_operations	100000000
+evalexpr_rhai_max_string_size	16777216
