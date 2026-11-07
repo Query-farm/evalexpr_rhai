@@ -2,6 +2,8 @@
 name = "duckdb_evalexpr_rhai_rust"
 version = "2026.1107.1"
 edition = "2021"
+# The wasm CI builds use Rust 1.86; this keeps `cargo update` resolving wasm-compatible versions.
+rust-version = "1.86"
 publish = false
 
 build = "build.rs"
