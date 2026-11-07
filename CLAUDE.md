@@ -40,12 +40,18 @@ When making changes the version should always be updated to the current date plu
 - CMake uses [Corrosion](https://github.com/corrosion-rs/corrosion) to integrate Cargo builds
 
 **Key Components:**
-- `compile_ast()` / `eval_ast()` - Compile Rhai to AST once, evaluate multiple times (for constant expressions)
-- `perform_eval()` - Direct evaluation without AST caching (for dynamic expressions)
+- `evalexpr_engine_new()` / `evalexpr_engine_free()` - one Rhai engine per DuckDB thread (FunctionLocalState),
+  created with the `evalexpr_rhai_max_*` limits and an interrupt callback (`ClientContext::IsInterrupted`)
+- `evalexpr_engine_eval_batch()` - evaluates a whole chunk on a large, separately allocated stack (stacker),
+  caching compiled ASTs per engine
+- Every `extern "C"` function is `catch_unwind`-guarded; returned strings are freed with `free_result_cstring`
 - Results returned as `UNION['ok': JSON, 'error': VARCHAR]` type
+- After changing the FFI, regenerate `src/include/rust.h` with `make rust_binding_headers` (needs cbindgen)
 
 **Rhai Packages Enabled:**
-- RandomPackage, FilesystemPackage, UrlPackage, SciPackage
+- RandomPackage, UrlPackage, SciPackage (without its `io` feature)
+- Never register packages that reach the host (rhai-fs, rhai-sci `io`, network): they bypass
+  `enable_external_access` / `allowed_directories`.
 
 ## Testing
 
