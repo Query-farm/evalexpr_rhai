@@ -34,12 +34,13 @@ SELECT evalexpr_rhai('import "/etc/hostname" as m; 1').error IS NOT NULL;
 ----
 true
 
-# Even an existing .rhai module file on disk cannot be imported.
+# Even an existing .rhai module file on disk cannot be imported. (Backslashes in Windows paths
+# would be escape sequences inside a Rhai string literal, so use forward slashes.)
 statement ok
 COPY (SELECT 'export const x = 42;' AS line) TO '__TEST_DIR__/evx_module.rhai' (FORMAT csv, HEADER false, QUOTE '');
 
 query I
-SELECT evalexpr_rhai('import "__TEST_DIR__/evx_module" as m; m::x').error LIKE '%Module not found%';
+SELECT evalexpr_rhai('import "' || replace('__TEST_DIR__', '\', '/') || '/evx_module" as m; m::x').error LIKE '%Module not found%';
 ----
 true
 

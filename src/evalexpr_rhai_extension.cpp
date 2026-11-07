@@ -187,7 +187,7 @@ namespace duckdb
                 continue;
             }
             const auto &expression = expression_data[expression_idx];
-            EvalInput input {expression.GetData(), expression.GetSize(), nullptr, 0};
+            EvalInput input {expression.GetData(), static_cast<size_t>(expression.GetSize()), nullptr, 0};
 
             // A NULL (or absent) context evaluates the expression without a `context` variable.
             if (context_data)
